@@ -80,11 +80,11 @@
 
 // ─── IDENTITAS GATEWAY ────────────────────────────────────────────────────────
 // Ganti sesuai lokasi: "halte_a", "halte_b", dst
-#define GATEWAY_ID    "technomart"
+#define GATEWAY_ID    "gedung_sipil"
 
 // ─── KONFIGURASI WiFi KAMPUS ──────────────────────────────────────────────────
-const char* WIFI_SSID     = "bayu";
-const char* WIFI_PASSWORD = "bayuuuu3";
+const char* WIFI_SSID     = "Hai";
+const char* WIFI_PASSWORD = "";
 
 // ─── KONFIGURASI CAPTIVE PORTAL MikroTik ─────────────────────────────────────
 const char* PORTAL_USER   = "";
@@ -92,7 +92,7 @@ const char* PORTAL_PASS   = "";
 const char* PORTAL_IP     = "";
 
 // ─── KONFIGURASI WiFi CADANGAN ────────────────────────────────────────────────
-const char* WIFI_SSID_BK  = "eka";
+const char* WIFI_SSID_BK  = "";
 const char* WIFI_PASS_BK  = "";
 
 // ─── KONFIGURASI MQTT (HiveMQ Cloud — TLS port 8884) ─────────────────────────

@@ -12,67 +12,78 @@ Catatan desain:
 - Trade-off: ini menulis 25 point per paket (1 pack + 24 cell). Pantau usage
   di dashboard InfluxDB Cloud kalau nanti node bertambah jadi 3.
 """
+"""
+Bridge: HiveMQ (MQTT, TLS) -> InfluxDB Cloud Serverless
+
+Mendengarkan topic "bms/vehicle/+/data" (semua node), parse JSON yang sudah
+dipublish oleh receiver_workshop / receiver_halte, lalu tulis ke InfluxDB.
+
+Fitur:
+- Sanity check fisik baterai (is_valid_payload)
+- Deduplikasi paket berbasis sequence number (processed_packets)
+"""
 
 import json
 import ssl
 import time
 import logging
-
 import paho.mqtt.client as mqtt
-# Tambahkan di bagian atas script, di bawah import
-processed_packets = {} 
-
-def on_message(client, userdata, msg):
-    try:
-        data = json.loads(msg.payload.decode("utf-8"))
-        node_id = data.get("node_id")
-        seq = data.get("seq") # Menggunakan sequence number dari ESP32
-        
-        # Deduplikasi: (node_id + seq)
-        key = f"{node_id}_{seq}"
-        now = time.time()
-        
-        # Jika sudah diproses dalam 10 detik terakhir, abaikan
-        if key in processed_packets and (now - processed_packets[key] < 10):
-            return 
-        
-        processed_packets[key] = now
-        
-        # Panggil fungsi handle_payload
-        handle_payload(node_id, data.get("gateway_id", "unknown"), data)
-        
-    except Exception as e:
-        log.error(f"Error: {e}")
-        
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
+# ─── LOGGING CONFIGURATION ──────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("bridge")
 
-# ─── KONFIGURASI HiveMQ (samakan dengan yang sudah jalan di receiver) ───────
+# ─── STATE STORAGE (DEDUPLIKASI) ────────────────────────────────────────────
+# Menyimpan sequence number terakhir dari tiap node_id -> {node_id: last_seq}
+processed_packets = {} 
+
+# ─── KONFIGURASI HiveMQ ─────────────────────────────────────────────────────
 MQTT_HOST = "d350359d619a4da79d3dd62cc4659b70.s1.eu.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "JKbms"
 MQTT_PASS = "UH04FTJKbms"
-MQTT_TOPIC = "bms/vehicle/+/data"   # wildcard: tangkap semua node
+MQTT_TOPIC = "bms/vehicle/+/data"
 
 # ─── KONFIGURASI InfluxDB Cloud Serverless ──────────────────────────────────
-# Region URL beda-beda tergantung saat sign up (lihat di dashboard InfluxDB
-# Anda: Settings/region). Contoh umum: https://us-east-1-1.aws.cloud2.influxdata.com
-INFLUX_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"          # ganti sesuai region akun Anda
-INFLUX_TOKEN = "sV-RpZ9kw0f2T1JxDqU5wvn2dK_B5RC8RYYvf_8rrrLJv_2u_o-ih9TTRSIXjxBz_AD9C1jP5euUaeb0Tsy7Dw=="         # token write yang dibuat di Langkah 1
-INFLUX_ORG = ""                              # WAJIB string kosong untuk Cloud Serverless
-INFLUX_BUCKET = "battery_ev_db"                # nama bucket yang dibuat di Langkah 1
+INFLUX_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"          
+INFLUX_TOKEN = "sV-RpZ9kw0f2T1JxDqU5wvn2dK_B5RC8RYYvf_8rrrLJv_2u_o-ih9TTRSIXjxBz_AD9C1jP5euUaeb0Tsy7Dw=="         
+INFLUX_ORG = ""                              
+INFLUX_BUCKET = "battery_ev_db"                
 
 influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 
 
-def handle_payload(node_id: int, gateway_id: str, data: dict):
-    points = []
+def is_valid_payload(data: dict) -> bool:
+    """Sanity check sebelum data masuk InfluxDB."""
+    soc        = data.get("soc", 0)
+    pack_v     = data.get("pack_v", 0)
+    current_a  = data.get("current_a", 0)
+    temp_mos   = data.get("temp_mos", 0)
+    temp_t1    = data.get("temp_t1", 0)
+    temp_t2    = data.get("temp_t2", 0)
+    cell_min   = data.get("cell_min_mv", 0)
+    cell_max   = data.get("cell_max_mv", 0)
+    cell_delta = data.get("cell_delta_mv", 0)
 
-    pack_point = (
+    checks = [
+        0   <= soc        <= 100,
+        50  <= pack_v      <= 100,      # Pas untuk pack 24S LiFePO4 (~76-88V)
+        -300 <= current_a  <= 300,      # Rating max charger/motor
+        -40 <= temp_mos    <= 100,
+        -40 <= temp_t1     <= 100,
+        -40 <= temp_t2     <= 100,
+        2000 <= cell_min   <= 4200,     # Batas fisik sel LiFePO4
+        2000 <= cell_max   <= 4200,
+        0   <= cell_delta  <= 500,      # Imbalance >500mV tidak wajar untuk pack sehat
+    ]
+    return all(checks) 
+
+
+def handle_payload(node_id: int, gateway_id: str, data: dict):
+    point = (
         Point("bms_pack")
         .tag("gateway_id", gateway_id)
         .tag("node_id", str(node_id))
@@ -95,24 +106,15 @@ def handle_payload(node_id: int, gateway_id: str, data: dict):
         .field("rssi", int(data.get("rssi", 0)))
         .field("snr", float(data.get("snr", 0)))
     )
-    points.append(pack_point)
 
     cells = data.get("cells_mv", [])
     wires = data.get("wire_res_mohm", [])
     for i in range(min(len(cells), 24)):
-        cell_point = (
-            Point("bms_cell")
-            .tag("gateway_id", gateway_id)
-            .tag("node_id", str(node_id))
-            .tag("cell_index", str(i + 1))
-            .field("voltage_mv", int(cells[i]))
-        )
-        if i < len(wires):
-            cell_point = cell_point.field("wire_res_mohm", int(wires[i]))
-        points.append(cell_point)
+        point = point.field(f"cell{i+1:02d}_mv", int(cells[i]))
+    for i in range(min(len(wires), 24)):
+        point = point.field(f"wire{i+1:02d}_mohm", int(wires[i]))
 
-    write_api.write(bucket=INFLUX_BUCKET, record=points)
-    log.info(f"Tulis {len(points)} point ke InfluxDB (node {node_id}, seq {data.get('seq')})")
+    write_api.write(bucket=INFLUX_BUCKET, record=point)
 
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -128,10 +130,28 @@ def on_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode("utf-8"))
         node_id = data.get("node_id")
-        gateway_id = data.get("gateway_id", "unknown")
+        seq = data.get("seq")  # Mengambil urutan paket pembacaan BMS
+
         if node_id is None:
             log.warning(f"Payload tanpa node_id, topic={msg.topic}")
             return
+
+        # ─── PROSES DEDUPLIKASI ─────────────────────────────────────────────
+        if seq is not None:
+            if processed_packets.get(node_id) == seq:
+                log.info(f"Paket duplikat diabaikan (sudah diproses via gateway lain). node={node_id} seq={seq}")
+                return
+            # Update sequence number terbaru untuk node ini
+            processed_packets[node_id] = seq
+        # ────────────────────────────────────────────────────────────────────
+
+        # ─── VALIDASI DATA ──────────────────────────────────────────────────
+        if not is_valid_payload(data):
+            log.warning(f"Payload tidak valid, dibuang. node={node_id} seq={seq} "
+                        f"soc={data.get('soc')} pack_v={data.get('pack_v')} rssi={data.get('rssi')}")
+            return   
+
+        gateway_id = data.get("gateway_id", "unknown")
         handle_payload(node_id, gateway_id, data)
     except json.JSONDecodeError:
         log.error(f"Payload bukan JSON valid di topic {msg.topic}")

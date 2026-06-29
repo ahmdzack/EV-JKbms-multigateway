@@ -1,6 +1,12 @@
 """
-Export bms_pack + bms_cell dari InfluxDB Cloud ke CSV
-Format: identik dengan bms_log_new2.csv (separator ";", satu baris per paket)
+Export bms_pack dari InfluxDB Cloud ke CSV
+Format: separator ";", satu baris per paket
+
+[FIX] Sejak MQTT_to_Influxdb.py digabung jadi 1 measurement, cell voltage
+dan wire resistance sudah ada sebagai field langsung di "bms_pack"
+(cell01_mv...cell24_mv, wire01_mohm...wire24_mohm). Query terpisah ke
+measurement "bms_cell" DIHAPUS karena measurement itu sudah tidak pernah
+ditulis lagi -> sebelumnya menyebabkan kolom Cell0X_mV/CellWRX selalu kosong.
 
 Kolom output:
   timestamp;gateway_id;node_id;seq;soc;pack_v;current_a;remain_ah;nominal_ah;
@@ -27,7 +33,7 @@ WIB = timezone(timedelta(hours=7))  # UTC+7
 client    = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 query_api = client.query_api()
 
-# ─── 1. Query bms_pack ────────────────────────────────────────────────────────
+# ─── 1. Query bms_pack (sekarang sudah termasuk semua cell & wire res) ────────
 print("[INFO] Query bms_pack ...")
 query_pack = f'''
 from(bucket: "{INFLUX_BUCKET}")
@@ -49,32 +55,8 @@ for table in tables:
 
 print(f"[INFO] bms_pack: {len(pack_dict)} timestamp unik")
 
-# ─── 2. Query bms_cell ────────────────────────────────────────────────────────
-print("[INFO] Query bms_cell ...")
-query_cell = f'''
-from(bucket: "{INFLUX_BUCKET}")
-  |> range(start: {RANGE})
-  |> filter(fn: (r) => r._measurement == "bms_cell")
-'''
-
-cell_dict = {}
-tables = query_api.query(query_cell)
-for table in tables:
-    for record in table.records:
-        t    = record.get_time()
-        nid  = str(record.values.get("node_id", ""))
-        cidx = str(record.values.get("cell_index", ""))
-        key  = (t, nid)
-        if key not in cell_dict:
-            cell_dict[key] = {}
-        if cidx not in cell_dict[key]:
-            cell_dict[key][cidx] = {}
-        cell_dict[key][cidx][record.get_field()] = record.get_value()
-
-print(f"[INFO] bms_cell: {len(cell_dict)} timestamp unik")
-
-# ─── 3. Gabungkan ─────────────────────────────────────────────────────────────
-print("[INFO] Menggabungkan data ...")
+# ─── 2. Susun baris CSV ───────────────────────────────────────────────────────
+print("[INFO] Menyusun baris ...")
 rows = []
 
 for (t, nid), pack in pack_dict.items():
@@ -109,17 +91,17 @@ for (t, nid), pack in pack_dict.items():
     row["rssi"]          = pack.get("rssi", "")
     row["snr"]           = pack.get("snr", "")
 
-    cells = cell_dict.get((t, nid), {})
+    # [FIX] Cell voltage & wire resistance diambil langsung dari "pack"
+    # (sama point/timestamp), bukan dari lookup measurement terpisah lagi.
     for i in range(1, 25):
-        cidx = str(i)
-        row[f"Cell{i:02d}_mV"] = cells.get(cidx, {}).get("voltage_mv", "")
-        row[f"CellWR{i}"]      = cells.get(cidx, {}).get("wire_res_mohm", "")
+        row[f"Cell{i:02d}_mV"] = pack.get(f"cell{i:02d}_mv", "")
+        row[f"CellWR{i}"]      = pack.get(f"wire{i:02d}_mohm", "")
 
     rows.append(row)
 
-# ─── 4. Tulis CSV ─────────────────────────────────────────────────────────────
+# ─── 3. Tulis CSV ─────────────────────────────────────────────────────────────
 if not rows:
-    print("[WARN] Tidak ada data. Pastikan ESP32 sudah mengirim data.")
+    print("[WARN] Tidak ada data. Pastikan ESP32 sudah mengirim data, dan RANGE mencakup waktu pengambilan data.")
 else:
     cell_cols = [f"Cell{i:02d}_mV" for i in range(1, 25)]
     wr_cols   = [f"CellWR{i}"      for i in range(1, 25)]

@@ -71,8 +71,8 @@
 #define GATEWAY_ID    "Workshop"
 
 // ─── KONFIGURASI WiFi KAMPUS ──────────────────────────────────────────────────
-const char* WIFI_SSID     = "Camon";
-const char* WIFI_PASSWORD = "canca091";
+const char* WIFI_SSID     = "jaringan";
+const char* WIFI_PASSWORD = "12345678";
 
 // ─── KONFIGURASI CAPTIVE PORTAL MikroTik ─────────────────────────────────────
 const char* PORTAL_USER   = "";

@@ -25,8 +25,8 @@ struct __attribute__((packed)) PayloadBMS {
     uint32_t cycleCount;        // Jumlah siklus charge
     uint8_t batPercent;       // Persentase baterai (0-100%) — tambahan untuk monitoring level baterai
     uint16_t batVoltage;      // Tegangan baterai (mV) — tambahan untuk monitoring level baterai
-    uint32_t    lat;               // Latitude GPS
-    uint32_t    lon;               // Longitude GPS
+    int32_t    lat;               // Latitude GPS
+    int32_t    lon;               // Longitude GPS
 };
 
 // Guard — kompilasi gagal jika struct tidak tepat 139 byte
