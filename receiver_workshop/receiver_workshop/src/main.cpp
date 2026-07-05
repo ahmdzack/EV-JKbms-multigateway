@@ -115,7 +115,6 @@ bool          nodeOnline[MAX_NODES + 1]      = {false};
 int           nodeRSSI[MAX_NODES + 1]        = {0};
 float         nodeSNR[MAX_NODES + 1]         = {0.0f};
 uint32_t      nodePacketCount[MAX_NODES + 1] = {0};
-uint8_t       seqCounter[MAX_NODES + 1]      = {0};
 
 // ─── STATE KONEKSI ────────────────────────────────────────────────────────────
 bool          portalOK        = false;
@@ -314,7 +313,7 @@ static void sendHeartbeat() {
 }
 
 static bool publishNodeData(const PayloadBMS& d, int rssi, float snr,
-                            uint8_t seq, uint16_t minV, uint16_t maxV) {
+                            uint32_t seq, uint16_t minV, uint16_t maxV) {
     if (!mqtt.connected()) return false;
 
     JsonDocument doc;
@@ -382,13 +381,13 @@ static void createCSVHeader(const char* path) {
 }
 
 static void logToSD(const char* path, const PayloadBMS& d,
-                    int rssi, float snr, uint8_t seq,
+                    int rssi, float snr, uint32_t seq,
                     uint16_t minV, uint16_t maxV) {
     if (!sdReady) return;
     File f = SD.open(path, FILE_APPEND);
     if (!f) { Serial.printf("[SD] ✗ Gagal buka %s\n", path); return; }
 
-    f.printf("%lu,%s,%d,%d,", millis(), GATEWAY_ID, d.nodeId, seq);
+    f.printf("%lu,%s,%d,%lu,", millis(), GATEWAY_ID, d.nodeId, seq);
     f.printf("%d,%.2f,%.3f,%.3f,%.3f,%u,",
              d.soc,
              d.packVoltage     / 100.0f,
@@ -486,7 +485,7 @@ static void updateOLED() {
             }
             display.printf("PKT:%lu\n",    nodePacketCount[1]);
             display.printf("SNR:%.1fdB\n", nodeSNR[1]);
-            display.printf("SEQ:%d\n",     seqCounter[1]);
+            display.printf("SEQ:%d\n",     nodeData[1].packetSeq);
         }
     }
     display.display();
@@ -614,7 +613,6 @@ void loop() {
             nodeSNR[id]         = snr;
             nodePacketCount[id]++;
             totalPackets++;
-            seqCounter[id]      = (seqCounter[id] + 1) & 0xFF;
 
             // Hitung min/max tegangan sel
             uint16_t minV = 9999, maxV = 0;
@@ -640,14 +638,14 @@ void loop() {
                           incoming.wireRes[0]);
 
             // Log ke CSV permanen (selalu)
-            logToSD(CSV_FILE, incoming, rssi, snr, seqCounter[id], minV, maxV);
+            logToSD(CSV_FILE, incoming, rssi, snr, incoming.packetSeq, minV, maxV);
 
             // Publish ke MQTT — jika gagal, simpan ke pending
             bool sent = publishNodeData(incoming, rssi, snr,
-                                        seqCounter[id], minV, maxV);
+                                         incoming.packetSeq, minV, maxV);
             if (!sent) {
                 logToSD(REPLAY_FILE, incoming, rssi, snr,
-                        seqCounter[id], minV, maxV);
+                        incoming.packetSeq, minV, maxV);
                 sdPendingCount++;
                 Serial.println("[INFO] MQTT offline — data disimpan ke pending.");
             }

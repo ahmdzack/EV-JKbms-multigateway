@@ -122,7 +122,6 @@ bool          nodeOnline[MAX_NODES + 1]      = {false};
 int           nodeRSSI[MAX_NODES + 1]        = {0};
 float         nodeSNR[MAX_NODES + 1]         = {0.0f};
 uint32_t      nodePacketCount[MAX_NODES + 1] = {0};
-uint8_t       seqCounter[MAX_NODES + 1]      = {0};
 
 // ─── STATE KONEKSI ────────────────────────────────────────────────────────────
 bool          portalOK        = false;
@@ -314,7 +313,7 @@ static void sendHeartbeat() {
 }
 
 static bool publishNodeData(const PayloadBMS& d, int rssi, float snr,
-                            uint8_t seq, uint16_t minV, uint16_t maxV) {
+                            uint32_t seq, uint16_t minV, uint16_t maxV) {
     if (!mqtt.connected()) return false;
 
     JsonDocument doc;
@@ -433,7 +432,7 @@ static void updateOLED() {
                 display.println("GPS:NO FIX");
             }
             display.printf("PKT:%lu\n",    nodePacketCount[1]);
-            display.printf("SEQ:%d\n",     seqCounter[1]);
+            display.printf("SEQ:%d\n",     nodeData[1].packetSeq);
         }
     }
     display.display();
@@ -548,7 +547,6 @@ void loop() {
             nodeSNR[id]         = snr;
             nodePacketCount[id]++;
             totalPackets++;
-            seqCounter[id]      = (seqCounter[id] + 1) & 0xFF;
 
             // Hitung min/max tegangan sel
             uint16_t minV = 9999, maxV = 0;
@@ -575,7 +573,7 @@ void loop() {
 
             // Publish ke MQTT — tidak ada SD, jadi kalau gagal, data ini hilang
             bool sent = publishNodeData(incoming, rssi, snr,
-                                        seqCounter[id], minV, maxV);
+                                         incoming.packetSeq, minV, maxV);
             if (!sent) {
                 Serial.println("[WARN] MQTT offline — paket ini tidak tersimpan (tidak ada SD).");
             }
