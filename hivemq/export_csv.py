@@ -34,7 +34,7 @@ INFLUX_TOKEN  = "sV-RpZ9kw0f2T1JxDqU5wvn2dK_B5RC8RYYvf_8rrrLJv_2u_o-ih9TTRSIXjxB
 INFLUX_ORG    = ""
 INFLUX_BUCKET = "battery_ev_db"
 
-RANGE           = "-14d"   # ganti sesuai kebutuhan: -1h, -24h, -7d, dst.
+RANGE           = "-24h"   # ganti sesuai kebutuhan: -1h, -24h, -7d, dst.
 OUTPUT_FILE     = "bms_export.csv"
 REJECTED_FILE   = "bms_export_rejected.csv"  # baris yang dibuang, untuk audit/debug
 

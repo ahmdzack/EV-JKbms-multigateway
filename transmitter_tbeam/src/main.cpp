@@ -105,6 +105,7 @@ unsigned long g_lastRequest  = 0;
 unsigned long g_lastLoRaSend = 0;
 unsigned long g_lastBleRetry = 0;
 unsigned long g_lastGpsDebug = 0;
+static uint32_t g_packetSeq = 0;
 
 // Perintah ke JK-BMS — byte ke-19 diisi checksum oleh calculateChecksum()
 uint8_t g_CMD_WAKEUP[20]   = { 0xAA, 0x55, 0x90, 0xEB, 0x96,
@@ -479,6 +480,7 @@ void loop() {
     // ── 3. Kirim LoRa jika data BMS tersedia ─────────────────────────────────
     if (g_bmsDataReady && (now - g_lastLoRaSend > LORA_SEND_MS)) {
         dataToSend.batPercent = pmu.getBatteryPercent();
+        dataToSend.packetSeq  = g_packetSeq++;
         LoRa.beginPacket();
         size_t written = LoRa.write((uint8_t*)&dataToSend, sizeof(PayloadBMS));
         bool txOK = LoRa.endPacket();

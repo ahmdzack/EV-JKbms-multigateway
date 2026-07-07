@@ -130,26 +130,24 @@ def on_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode("utf-8"))
         node_id = data.get("node_id")
-        seq = data.get("seq")  # Mengambil urutan paket pembacaan BMS
+        seq = data.get("seq")
 
         if node_id is None:
             log.warning(f"Payload tanpa node_id, topic={msg.topic}")
             return
 
-        # ─── PROSES DEDUPLIKASI ─────────────────────────────────────────────
-        if seq is not None:
-            if processed_packets.get(node_id) == seq:
-                log.info(f"Paket duplikat diabaikan (sudah diproses via gateway lain). node={node_id} seq={seq}")
-                return
-            # Update sequence number terbaru untuk node ini
-            processed_packets[node_id] = seq
-        # ────────────────────────────────────────────────────────────────────
-
-        # ─── VALIDASI DATA ──────────────────────────────────────────────────
+        # Validasi DULU
         if not is_valid_payload(data):
             log.warning(f"Payload tidak valid, dibuang. node={node_id} seq={seq} "
                         f"soc={data.get('soc')} pack_v={data.get('pack_v')} rssi={data.get('rssi')}")
-            return   
+            return
+
+        # Dedup HANYA setelah lolos validasi
+        if seq is not None:
+            if processed_packets.get(node_id) == seq:
+                log.info(f"Paket duplikat diabaikan. node={node_id} seq={seq}")
+                return
+            processed_packets[node_id] = seq
 
         gateway_id = data.get("gateway_id", "unknown")
         handle_payload(node_id, gateway_id, data)
@@ -157,7 +155,6 @@ def on_message(client, userdata, msg):
         log.error(f"Payload bukan JSON valid di topic {msg.topic}")
     except Exception as e:
         log.error(f"Gagal proses pesan: {e}")
-
 
 def main():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)

@@ -80,10 +80,10 @@
 
 // ─── IDENTITAS GATEWAY ────────────────────────────────────────────────────────
 // Ganti sesuai lokasi: "halte_a", "halte_b", dst
-#define GATEWAY_ID    "gedung_sipil"
+#define GATEWAY_ID    "technomart"
 
 // ─── KONFIGURASI WiFi KAMPUS ──────────────────────────────────────────────────
-const char* WIFI_SSID     = "Hai";
+const char* WIFI_SSID     = "Dilul";
 const char* WIFI_PASSWORD = "";
 
 // ─── KONFIGURASI CAPTIVE PORTAL MikroTik ─────────────────────────────────────
