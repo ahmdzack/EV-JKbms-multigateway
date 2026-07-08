@@ -7,7 +7,7 @@ dipublish oleh receiver_workshop / receiver_halte, lalu tulis ke InfluxDB.
 Catatan desain:
 - Field pack-level (SOC, arus, tegangan, dst) -> measurement "bms_pack"
 - Tiap sel (24 sel) -> measurement "bms_cell" dengan tag cell_index, supaya
-  query per-sel di Grafana lebih natural (mis. "tampilkan tegangan sel 7
+  query per-sel di dashboard lebih natural (mis. "tampilkan tegangan sel 7
   sepanjang waktu") dibanding kalau disimpan sebagai 1 field array.
 - Trade-off: ini menulis 25 point per paket (1 pack + 24 cell). Pantau usage
   di dashboard InfluxDB Cloud kalau nanti node bertambah jadi 3.
@@ -18,9 +18,7 @@ Bridge: HiveMQ (MQTT, TLS) -> InfluxDB Cloud Serverless
 Mendengarkan topic "bms/vehicle/+/data" (semua node), parse JSON yang sudah
 dipublish oleh receiver_workshop / receiver_halte, lalu tulis ke InfluxDB.
 
-Fitur:
-- Sanity check fisik baterai (is_valid_payload)
-- Deduplikasi paket berbasis sequence number (processed_packets)
+
 """
 
 import json
@@ -30,6 +28,7 @@ import logging
 import paho.mqtt.client as mqtt
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+from validation_rules import validate_payload
 
 # ─── LOGGING CONFIGURATION ──────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -54,33 +53,6 @@ INFLUX_BUCKET = "battery_ev_db"
 
 influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 write_api = influx_client.write_api(write_options=SYNCHRONOUS)
-
-
-def is_valid_payload(data: dict) -> bool:
-    """Sanity check sebelum data masuk InfluxDB."""
-    soc        = data.get("soc", 0)
-    pack_v     = data.get("pack_v", 0)
-    current_a  = data.get("current_a", 0)
-    temp_mos   = data.get("temp_mos", 0)
-    temp_t1    = data.get("temp_t1", 0)
-    temp_t2    = data.get("temp_t2", 0)
-    cell_min   = data.get("cell_min_mv", 0)
-    cell_max   = data.get("cell_max_mv", 0)
-    cell_delta = data.get("cell_delta_mv", 0)
-
-    checks = [
-        0   <= soc        <= 100,
-        50  <= pack_v      <= 100,      # Pas untuk pack 24S LiFePO4 (~76-88V)
-        -300 <= current_a  <= 300,      # Rating max charger/motor
-        -40 <= temp_mos    <= 100,
-        -40 <= temp_t1     <= 100,
-        -40 <= temp_t2     <= 100,
-        2000 <= cell_min   <= 4200,     # Batas fisik sel LiFePO4
-        2000 <= cell_max   <= 4200,
-        0   <= cell_delta  <= 500,      # Imbalance >500mV tidak wajar untuk pack sehat
-    ]
-    return all(checks) 
-
 
 def handle_payload(node_id: int, gateway_id: str, data: dict):
     point = (
@@ -136,10 +108,11 @@ def on_message(client, userdata, msg):
             log.warning(f"Payload tanpa node_id, topic={msg.topic}")
             return
 
-        # Validasi DULU
-        if not is_valid_payload(data):
-            log.warning(f"Payload tidak valid, dibuang. node={node_id} seq={seq} "
-                        f"soc={data.get('soc')} pack_v={data.get('pack_v')} rssi={data.get('rssi')}")
+        # Validasi DULU — pakai modul bersama
+        valid, reason = validate_payload(data)
+        if not valid:
+            log.warning(f"Payload tidak valid, dibuang: {reason}. "
+                        f"node={node_id} seq={seq}")
             return
 
         # Dedup HANYA setelah lolos validasi
@@ -155,7 +128,7 @@ def on_message(client, userdata, msg):
         log.error(f"Payload bukan JSON valid di topic {msg.topic}")
     except Exception as e:
         log.error(f"Gagal proses pesan: {e}")
-
+        
 def main():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
     client.username_pw_set(MQTT_USER, MQTT_PASS)

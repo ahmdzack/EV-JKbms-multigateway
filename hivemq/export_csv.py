@@ -1,32 +1,7 @@
-"""
-Export bms_pack dari InfluxDB Cloud ke CSV
-Format: separator ";", satu baris per paket
-
-[FIX] Sejak MQTT_to_Influxdb.py digabung jadi 1 measurement, cell voltage
-dan wire resistance sudah ada sebagai field langsung di "bms_pack"
-(cell01_mv...cell24_mv, wire01_mohm...wire24_mohm). Query terpisah ke
-measurement "bms_cell" DIHAPUS karena measurement itu sudah tidak pernah
-ditulis lagi -> sebelumnya menyebabkan kolom Cell0X_mV/CellWRX selalu kosong.
-
-[FIX-2] Ditambahkan is_row_valid() sebagai lapisan validasi KEDUA sebelum
-data ditulis ke CSV. Ini PENTING dibaca: ini bukan pengganti perbaikan bug
-di MQTT_to_Influxdb.py, di mana on_message() didefinisikan dua kali dan
-definisi kedua (tanpa is_valid_payload()) menimpa yang pertama -> validasi
-di bridge saat ini TIDAK PERNAH jalan, sehingga data korup sudah lebih dulu
-masuk ke InfluxDB sebelum sampai ke script export ini. Filter di sini cuma
-mencegah data korup itu ikut ke CSV/analisis, tidak membersihkan InfluxDB
-itu sendiri. Perbaiki bug on_message duplikat di bridge sesegera mungkin.
-
-Kolom output:
-  timestamp;gateway_id;node_id;seq;soc;pack_v;current_a;remain_ah;nominal_ah;
-  cycle_count;temp_mos;temp_t1;temp_t2;avg_cell_mv;cell_delta_mv;cell_min_mv;
-  cell_max_mv;lat;lon;rssi;snr;
-  Cell01_mV...Cell24_mV;CellWR1...CellWR24
-"""
-
 import pandas as pd
 from influxdb_client import InfluxDBClient
 from datetime import timezone, timedelta
+from validation_rules import validate_payload
 
 # ─── Konfigurasi ──────────────────────────────────────────────────────────────
 INFLUX_URL    = "https://us-east-1-1.aws.cloud2.influxdata.com"  # ganti sesuai region Anda
@@ -43,22 +18,6 @@ WIB = timezone(timedelta(hours=7))  # UTC+7
 client    = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 query_api = client.query_api()
 
-# ─── 0. Validasi baris ────────────────────────────────────────────────────────
-# Level-pack: sama persis dengan is_valid_payload() di MQTT_to_Influxdb.py,
-# supaya batas fisik yang dipakai konsisten di seluruh pipeline.
-# Level-sel: TAMBAHAN — avg_cell_mv dari BMS terbukti masih bisa outlier
-# walau semua field level-pack lolos (lihat catatan analisis dashboard
-# sebelumnya). Satu sel korup saja cukup untuk membuang seluruh baris,
-# supaya tidak ada baris "separuh valid" yang menyesatkan time-series.
-
-PACK_V_RANGE      = (50, 100)     # sesuaikan dengan pack 24S LiFePO4 Anda (~76-88V nominal)
-CURRENT_A_RANGE   = (-300, 300)   # sesuaikan dengan rating max charger/motor
-TEMP_RANGE        = (-40, 100)
-CELL_MV_RANGE     = (2000, 4200)  # rentang fisik sel LiFePO4
-CELL_DELTA_RANGE  = (0, 500)      # imbalance >500mV mustahil untuk pack sehat
-WIRE_MOHM_RANGE   = (0, 2000)     # longgar; hanya untuk menangkap nilai sampah (mis. 65535)
-
-
 def _to_float(val):
     if val is None or val == "":
         return None
@@ -67,60 +26,39 @@ def _to_float(val):
     except (TypeError, ValueError):
         return None
 
+def is_row_valid(row: dict) -> tuple[bool, str]:
+    """Adaptasi row CSV (Cell01_mV, CellWR1, dst) ke bentuk yang
+    validate_payload() harapkan (cells_mv list, wire_res_mohm list),
+    lalu panggil satu sumber kebenaran yang sama dengan bridge."""
+    adapted = {
+        "soc":           _to_float(row.get("soc")),
+        "pack_v":        _to_float(row.get("pack_v")),
+        "current_a":     _to_float(row.get("current_a")),
+        "temp_mos":      _to_float(row.get("temp_mos")),
+        "temp_t1":       _to_float(row.get("temp_t1")),
+        "temp_t2":       _to_float(row.get("temp_t2")),
+        "cell_min_mv":   _to_float(row.get("cell_min_mv")),
+        "cell_max_mv":   _to_float(row.get("cell_max_mv")),
+        "cell_delta_mv": _to_float(row.get("cell_delta_mv")),
+        "cycle_count":   _to_float(row.get("cycle_count")),
+        "avg_cell_mv":   _to_float(row.get("avg_cell_mv")),
+        "lat":           _to_float(row.get("lat")),
+        "lon":           _to_float(row.get("lon")),
+        "cells_mv": [
+            _to_float(row.get(f"Cell{i:02d}_mV"))
+            for i in range(1, 25)
+            if row.get(f"Cell{i:02d}_mV") not in (None, "")
+        ],
+        "wire_res_mohm": [
+            _to_float(row.get(f"CellWR{i}"))
+            for i in range(1, 25)
+            if row.get(f"CellWR{i}") not in (None, "")
+        ],
+    }
+    return validate_payload(adapted)
 
 def _in_range(val, lo, hi):
     return val is not None and lo <= val <= hi
-
-
-def is_row_valid(row: dict) -> tuple[bool, str]:
-    """Return (valid, alasan_jika_ditolak)."""
-    soc        = _to_float(row.get("soc"))
-    pack_v     = _to_float(row.get("pack_v"))
-    current_a  = _to_float(row.get("current_a"))
-    temp_mos   = _to_float(row.get("temp_mos"))
-    temp_t1    = _to_float(row.get("temp_t1"))
-    temp_t2    = _to_float(row.get("temp_t2"))
-    cell_min   = _to_float(row.get("cell_min_mv"))
-    cell_max   = _to_float(row.get("cell_max_mv"))
-    cell_delta = _to_float(row.get("cell_delta_mv"))
-
-    if not _in_range(soc, 0, 100):
-        return False, f"soc={soc} di luar 0-100"
-    if not _in_range(pack_v, *PACK_V_RANGE):
-        return False, f"pack_v={pack_v} di luar {PACK_V_RANGE}"
-    if not _in_range(current_a, *CURRENT_A_RANGE):
-        return False, f"current_a={current_a} di luar {CURRENT_A_RANGE}"
-    if not _in_range(temp_mos, *TEMP_RANGE):
-        return False, f"temp_mos={temp_mos} di luar {TEMP_RANGE}"
-    if not _in_range(temp_t1, *TEMP_RANGE):
-        return False, f"temp_t1={temp_t1} di luar {TEMP_RANGE}"
-    if not _in_range(temp_t2, *TEMP_RANGE):
-        return False, f"temp_t2={temp_t2} di luar {TEMP_RANGE}"
-    if not _in_range(cell_min, *CELL_MV_RANGE):
-        return False, f"cell_min_mv={cell_min} di luar {CELL_MV_RANGE}"
-    if not _in_range(cell_max, *CELL_MV_RANGE):
-        return False, f"cell_max_mv={cell_max} di luar {CELL_MV_RANGE}"
-    if not _in_range(cell_delta, *CELL_DELTA_RANGE):
-        return False, f"cell_delta_mv={cell_delta} di luar {CELL_DELTA_RANGE}"
-
-    # Per-sel (24 sel)
-    for i in range(1, 25):
-        v = _to_float(row.get(f"Cell{i:02d}_mV"))
-        if v is None:
-            continue  # kolom kosong/hilang -> jangan buang baris hanya karena ini
-        if not _in_range(v, *CELL_MV_RANGE):
-            return False, f"Cell{i:02d}_mV={v} di luar {CELL_MV_RANGE}"
-
-    # Per-wire resistance (24 sel) — cuma tangkap nilai sampah/overflow
-    for i in range(1, 25):
-        w = _to_float(row.get(f"CellWR{i}"))
-        if w is None:
-            continue
-        if not _in_range(w, *WIRE_MOHM_RANGE):
-            return False, f"CellWR{i}={w} di luar {WIRE_MOHM_RANGE}"
-
-    return True, ""
-
 
 # ─── 1. Query bms_pack (sekarang sudah termasuk semua cell & wire res) ────────
 print("[INFO] Query bms_pack ...")
